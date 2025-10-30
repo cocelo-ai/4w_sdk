@@ -1,0 +1,11 @@
+Log file created at: 2025-10-30_20:45:13
+(25/10/30 20:45:13) INFO: Logger initialized
+(25/10/30 20:45:13) CRITICAL: Exception in control loop: E-stop: connection timeout or emergency flag reported
+Traceback (most recent call last):
+  File "/home/radxa/4w_sdk/w4_sdk/core/control_rate.py", line 30, in runner
+    loop_func(*args, **kwargs)
+  File "/home/radxa/4w_sdk/play.py", line 44, in loop
+    robot.check_safety()              # Check safety
+    ^^^^^^^^^^^^^^^^^^^^
+w4_sdk.classes.robot.robot.RobotEStopError: E-stop: connection timeout or emergency flag reported
+

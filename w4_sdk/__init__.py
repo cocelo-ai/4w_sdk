@@ -4,7 +4,7 @@ from .classes.joystick import Joystick
 from .classes.robot import Robot
 from .classes.rl import RL
 from .classes.mode import Mode
-from .core.cotrol_rate import control_rate
+from .core.control_rate import control_rate
 from .core.exceptions import RobotEStopError
 from .classes.logger import Logger
 

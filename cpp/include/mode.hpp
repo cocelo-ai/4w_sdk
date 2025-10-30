@@ -255,7 +255,7 @@ public:
         std::transform(type_lower.begin(), type_lower.end(), type_lower.begin(), [](unsigned char c){ return std::tolower(c); });
 
         // Instantiate policy class via package __init__.py
-        py::module_ pkg = py::module_::import("4w_sdk");
+        py::module_ pkg = py::module_::import("w4_sdk");
         py::object cls;
         if (type_lower == "mlp") {
             cls = pkg.attr("MLPPolicy");
