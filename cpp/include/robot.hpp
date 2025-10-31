@@ -43,6 +43,7 @@ public:
         _obs["ang_vel"] = std::vector<float>(3, 0.0f);
         _obs["proj_grav"] = std::vector<float>(3, 0.0f);
         _obs["last_action"] = std::vector<float>(16, 0.0f);
+        _obs["lin_vel"] = std::vector<float>(3, 0.0f);
         _obs["height_map"] = std::vector<float>(144, 0.6128f);
 
         // Offsets & limits
@@ -281,7 +282,7 @@ private:
             size_t mid_pos = mcu_str.find(mid);
             if (mid_pos == std::string::npos) { _cli_missed_req += 1; return false; }
             for (const char* k : {"p","v","t"}) {
-                std::string key = std::string(k) + "=";
+                std::string key = std::string(k) + ":";
                 size_t pos = mcu_str.find(key, mid_pos);
                 if (pos == std::string::npos) { _cli_missed_req += 1; return false; }
                 if (mcu_str.substr(pos + key.size(), 1) == "N") { _cli_missed_req += 1; return false; }
@@ -307,7 +308,7 @@ private:
             std::string mid = "M" + std::to_string(static_cast<int>(i+1));
             size_t mid_pos = mcu_front.find(mid);
             if (mid_pos == std::string::npos) continue;
-            size_t p_pos = mcu_front.find("p=", mid_pos);
+            size_t p_pos = mcu_front.find("p:", mid_pos);
             if (p_pos == std::string::npos) continue;
             float val = std::stof(mcu_front.substr(p_pos + 2));
             dof_pos[i] = val + _pos_offset[_joint_names[i]];
@@ -318,7 +319,7 @@ private:
             std::string mid = "M" + std::to_string(mid_num);
             size_t mid_pos = mcu_rear.find(mid);
             if (mid_pos == std::string::npos) continue;
-            size_t p_pos = mcu_rear.find("p=", mid_pos);
+            size_t p_pos = mcu_rear.find("p:", mid_pos);
             if (p_pos == std::string::npos) continue;
             float val = std::stof(mcu_rear.substr(p_pos + 2));
             dof_pos[6 + j] = val + _pos_offset[_joint_names[6 + j]];
@@ -330,7 +331,7 @@ private:
             std::string mid = "M" + std::to_string(static_cast<int>(i+1));
             size_t mid_pos = mcu_front.find(mid);
             if (mid_pos == std::string::npos) continue;
-            size_t v_pos = mcu_front.find("v=", mid_pos);
+            size_t v_pos = mcu_front.find("v:", mid_pos);
             if (v_pos == std::string::npos) continue;
             dof_vel[i] = std::stof(mcu_front.substr(v_pos + 2));
         }
@@ -340,7 +341,7 @@ private:
             std::string mid = "M" + std::to_string(mid_num);
             size_t mid_pos = mcu_rear.find(mid);
             if (mid_pos == std::string::npos) continue;
-            size_t v_pos = mcu_rear.find("v=", mid_pos);
+            size_t v_pos = mcu_rear.find("v:", mid_pos);
             if (v_pos == std::string::npos) continue;
             dof_vel[8 + j] = std::stof(mcu_rear.substr(v_pos + 2));
         }
@@ -351,18 +352,18 @@ private:
 
         size_t imu_pos = imu_src->find("IMU");
         if (imu_pos != std::string::npos) {
-            size_t gx_pos = imu_src->find("gx=", imu_pos);
+            size_t gx_pos = imu_src->find("gx:", imu_pos);
             if (gx_pos != std::string::npos) ang_vel[0] = std::stof(imu_src->substr(gx_pos + 3));
-            size_t gy_pos = imu_src->find("gy=", imu_pos);
+            size_t gy_pos = imu_src->find("gy:", imu_pos);
             if (gy_pos != std::string::npos) ang_vel[1] = std::stof(imu_src->substr(gy_pos + 3));
-            size_t gz_pos = imu_src->find("gz=", imu_pos);
+            size_t gz_pos = imu_src->find("gz:", imu_pos);
             if (gz_pos != std::string::npos) ang_vel[2] = std::stof(imu_src->substr(gz_pos + 3));
 
-            size_t pgx_pos = imu_src->find("pgx=", imu_pos);
+            size_t pgx_pos = imu_src->find("pgx:", imu_pos);
             if (pgx_pos != std::string::npos) proj_grav[0] = std::stof(imu_src->substr(pgx_pos + 4));
-            size_t pgy_pos = imu_src->find("pgy=", imu_pos);
+            size_t pgy_pos = imu_src->find("pgy:", imu_pos);
             if (pgy_pos != std::string::npos) proj_grav[1] = std::stof(imu_src->substr(pgy_pos + 4));
-            size_t pgz_pos = imu_src->find("pgz=", imu_pos);
+            size_t pgz_pos = imu_src->find("pgz:", imu_pos);
             if (pgz_pos != std::string::npos) proj_grav[2] = std::stof(imu_src->substr(pgz_pos + 4));
         }
 
