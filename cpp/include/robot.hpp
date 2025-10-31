@@ -529,6 +529,10 @@ private:
     std::unordered_map<std::string, float> _rel_max_pos, _rel_min_pos;
     std::vector<std::string> _joint_names;
 
+    // 효율적 파싱을 위한 모터 위치 캐싱
+    std::array<std::size_t, 9> _front_motor_pos{}; // M1..M8의 시작 위치
+    std::array<std::size_t, 17> _rear_motor_pos{}; // M9..M16의 시작 위치
+
     // gains
     std::vector<float> _kp;
     std::vector<float> _kd;
