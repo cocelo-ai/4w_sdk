@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC -O3 -DNDEBUG -flto -shared  -o rl.cpython-311-aarch64-linux-gnu.so CMakeFiles/rl.dir/home/radxa/4w_sdk/cpp/src/rl_bindings.cpp.o  -Wl,-rpath,"\$ORIGIN" 
