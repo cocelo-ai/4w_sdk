@@ -41,7 +41,5 @@ def loop():
     action = [0] * 16
     #robot.do_action(action)           # Do action
 
-    robot.check_safety()              # Check safety
-
 loop()
 
