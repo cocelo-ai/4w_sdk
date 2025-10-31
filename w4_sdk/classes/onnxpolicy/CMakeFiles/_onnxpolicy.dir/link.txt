@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC -O3 -DNDEBUG -flto -shared  -o onnxpolicy.cpython-311-aarch64-linux-gnu.so CMakeFiles/_onnxpolicy.dir/home/radxa/4w_sdk/cpp/src/onnxpolicy_bindings.cpp.o  -Wl,-rpath,"\$ORIGIN:/home/radxa/4w_sdk/cpp/onnxruntime/lib" /home/radxa/4w_sdk/cpp/onnxruntime/lib/libonnxruntime.so 
