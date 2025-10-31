@@ -1,1 +1,0 @@
-/usr/bin/c++ -fPIC -g -shared  -o robot.cpython-311-aarch64-linux-gnu.so CMakeFiles/robot.dir/home/radxa/4w_sdk/cpp/src/robot_bindings.cpp.o CMakeFiles/robot.dir/home/radxa/4w_sdk/cpp/src/fx_client.cpp.o CMakeFiles/robot.dir/home/radxa/4w_sdk/cpp/src/elapsed_timer.cpp.o  -Wl,-rpath,"\$ORIGIN" 
