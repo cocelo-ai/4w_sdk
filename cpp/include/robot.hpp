@@ -114,8 +114,7 @@ public:
         if (emergency_flag || std::max(_cli_disconn_duration_ms, _cli_missed_req * 20) >= _cli_disconn_timeout_ms)
             throw RobotEStopError("E-stop: connection timeout or emergency flag reported");
 
-        auto obs = get_obs();
-        _check_obs(obs);
+        _check_obs(_obs);
     }
 
     // ------- Observation (returns copy; internal buffers reused) -------
@@ -123,7 +122,6 @@ public:
         std::string mcu_front = _cli_front.req(_motor_ids_front);
         std::string mcu_rear  = _cli_rear.req(_motor_ids_rear);
         auto& parsed = _parse_obs(mcu_front, mcu_rear);  // [FIX] 두 문자열을 한 번에 파싱
-        _check_obs(parsed);
         return parsed;
     }
 
@@ -184,6 +182,7 @@ public:
         );
         // (선택) last_action 저장
         _obs["last_action"] = action;
+        check_safety();
     }
 
     // ------- Control utils -------
@@ -272,99 +271,198 @@ private:
     }
 
     // MCU data sanity (native string)
-    bool _check_mcu_data(const std::string& mcu_str,
-                         const std::vector<uint8_t>& ids) { // [FIX] 보드별 아이디 집합을 받도록 변경
+    bool _check_mcu_data(const std::string& mcu_str, const std::vector<uint8_t>& ids) {
+
         if (mcu_str.find("OK <REQ>") == std::string::npos) {
-            _cli_missed_req += 1; return false;
+            _cli_missed_req += 1;
+            return false;
         }
-        for (auto id : ids) {
-            std::string mid = "M" + std::to_string(id);
-            size_t mid_pos = mcu_str.find(mid);
-            if (mid_pos == std::string::npos) { _cli_missed_req += 1; return false; }
-            for (const char* k : {"p","v","t"}) {
-                std::string key = std::string(k) + ":";
-                size_t pos = mcu_str.find(key, mid_pos);
-                if (pos == std::string::npos) { _cli_missed_req += 1; return false; }
-                if (mcu_str.substr(pos + key.size(), 1) == "N") { _cli_missed_req += 1; return false; }
+
+        // 1.._last_action_len 까지 쓸 거라 +1
+        std::vector<std::size_t> motor_pos(_last_action_len + 1, 0);
+
+        // 한 번만 스캔해서 위치 캐싱
+        {
+            std::size_t cur = 0;
+            const std::size_t n = mcu_str.size();
+            while (cur < n) {
+                std::size_t mpos = mcu_str.find('M', cur);
+                if (mpos == std::string::npos) break;
+
+                std::size_t p = mpos + 1;
+                int num = 0;
+                bool has_digit = false;
+                while (p < n && mcu_str[p] >= '0' && mcu_str[p] <= '9') {
+                    has_digit = true;
+                    num = num * 10 + (mcu_str[p] - '0');
+                    ++p;
+                }
+
+                // 기대하는 범위 안에 있을 때만 저장
+                if (has_digit && num >= 1 && num <= _last_action_len) {
+                    motor_pos[num] = mpos;
+                }
+
+                cur = p;
             }
         }
+
+        // p, v, t 세 개만 도는 테이블
+        static constexpr const char* kKeys[] = { "p:", "v:", "t:" };
+
+        // 필요한 id만 검사
+        for (uint8_t id : ids) {
+            // 기대한 id가 근처에 아예 없으면 실패
+            if (id == 0 || id > _last_action_len) {
+                _cli_missed_req += 1;
+                return false;
+            }
+
+            std::size_t mid_pos = motor_pos[id];
+            if (mid_pos == 0) {
+                _cli_missed_req += 1;
+                return false;
+            }
+
+            // 여기만 inner loop로 정리
+            for (const char* key : kKeys) {
+                std::size_t pos = mcu_str.find(key, mid_pos);
+                if (pos == std::string::npos) {
+                    _cli_missed_req += 1;
+                    return false;
+                }
+                // "p:" / "v:" / "t:" 다 2글자라 +2 고정
+                std::size_t val_pos = pos + 2;
+                if (val_pos < mcu_str.size() && mcu_str[val_pos] == 'N') {
+                    _cli_missed_req += 1;
+                    return false;
+                }
+            }
+        }
+
         return true;
     }
 
     // Parse obs (in-place into pre-sized vectors, native string parsing)
     std::unordered_map<std::string, std::vector<float>>&
-    _parse_obs(const std::string& mcu_front, const std::string& mcu_rear) { // [FIX] 전/후 보드 동시 파싱
-        if (!_check_mcu_data(mcu_front, _motor_ids_front)) return _obs;
-        if (!_check_mcu_data(mcu_rear,  _motor_ids_rear )) return _obs;
+    _parse_obs(const std::string& mcu_front, const std::string& mcu_rear) {
+        // 1) 패킷 유효성 먼저
+        if (!_check_mcu_data(mcu_front, _motor_ids_front)) {
+            return _obs;
+        }
+        if (!_check_mcu_data(mcu_rear, _motor_ids_rear)) {
+            return _obs;
+        }
 
-        auto& dof_pos = _obs["dof_pos"]; // 12
-        auto& dof_vel = _obs["dof_vel"]; // 16
-        auto& ang_vel = _obs["ang_vel"];
+        // 2) 이 시점에서 "이번 패킷" 안에서는 M 들의 위치가 항상 같다고 가정하니까
+        //    멤버 배열이 비어 있으면 그때 한 번만 채운다.
+        //    (index 0은 안 쓰니까 1이나 9가 0인지로 판별)
+        if (_front_motor_pos[1] == 0) {
+            std::size_t cur = 0;
+            const std::size_t n = mcu_front.size();
+            while (cur < n) {
+                std::size_t mpos = mcu_front.find('M', cur);
+                if (mpos == std::string::npos) break;
+
+                std::size_t p = mpos + 1;
+                int num = 0;
+                bool has_digit = false;
+                while (p < n && mcu_front[p] >= '0' && mcu_front[p] <= '9') {
+                    has_digit = true;
+                    num = num * 10 + (mcu_front[p] - '0');
+                    ++p;
+                }
+                if (has_digit && num >= 1 && num <= 8) {
+                    _front_motor_pos[num] = mpos;
+                }
+                cur = p;
+            }
+        }
+        if (_rear_motor_pos[9] == 0) {
+            std::size_t cur = 0;
+            const std::size_t n = mcu_rear.size();
+            while (cur < n) {
+                std::size_t mpos = mcu_rear.find('M', cur);
+                if (mpos == std::string::npos) break;
+
+                std::size_t p = mpos + 1;
+                int num = 0;
+                bool has_digit = false;
+                while (p < n && mcu_rear[p] >= '0' && mcu_rear[p] <= '9') {
+                    has_digit = true;
+                    num = num * 10 + (mcu_rear[p] - '0');
+                    ++p;
+                }
+                if (has_digit && num >= 9 && num <= 16) {
+                    _rear_motor_pos[num] = mpos;
+                }
+                cur = p;
+            }
+        }
+
+        // 3) 이제부터는 멤버에 들어있는 위치만 써서 값 뽑는다
+        auto& dof_pos   = _obs["dof_pos"]; // 12
+        auto& dof_vel   = _obs["dof_vel"]; // 16
+        auto& ang_vel   = _obs["ang_vel"];
         auto& proj_grav = _obs["proj_grav"];
 
-        // ---- Positions (12) ----
-        // Front: M1..M6 -> dof_pos[0..5]
-        for (size_t i = 0; i < 6; ++i) {
-            std::string mid = "M" + std::to_string(static_cast<int>(i+1));
-            size_t mid_pos = mcu_front.find(mid);
-            if (mid_pos == std::string::npos) continue;
-            size_t p_pos = mcu_front.find("p:", mid_pos);
-            if (p_pos == std::string::npos) continue;
-            float val = std::stof(mcu_front.substr(p_pos + 2));
+        // ---- 위치 ----
+        // front: M1..M6 -> dof_pos[0..5]
+        for (int i = 0; i < 6; ++i) {
+            int mid = i + 1; // 1..6
+            std::size_t base = _front_motor_pos[mid];
+            // 여기서는 위치가 있다고 가정했으니까 바로 find
+            std::size_t ppos = mcu_front.find("p:", base);
+            float val = std::stof(mcu_front.substr(ppos + 2));
             dof_pos[i] = val + _pos_offset[_joint_names[i]];
         }
-        // Rear: M9..M14 -> dof_pos[6..11]
-        for (size_t j = 0; j < 6; ++j) {
-            int mid_num = 9 + static_cast<int>(j);
-            std::string mid = "M" + std::to_string(mid_num);
-            size_t mid_pos = mcu_rear.find(mid);
-            if (mid_pos == std::string::npos) continue;
-            size_t p_pos = mcu_rear.find("p:", mid_pos);
-            if (p_pos == std::string::npos) continue;
-            float val = std::stof(mcu_rear.substr(p_pos + 2));
+
+        // rear: M9..M14 -> dof_pos[6..11]
+        for (int j = 0; j < 6; ++j) {
+            int mid = 9 + j; // 9..14
+            std::size_t base = _rear_motor_pos[mid];
+            std::size_t ppos = mcu_rear.find("p:", base);
+            float val = std::stof(mcu_rear.substr(ppos + 2));
             dof_pos[6 + j] = val + _pos_offset[_joint_names[6 + j]];
         }
 
-        // ---- Velocities (16) ----
-        // Front: M1..M8 -> dof_vel[0..7]
-        for (size_t i = 0; i < 8; ++i) {
-            std::string mid = "M" + std::to_string(static_cast<int>(i+1));
-            size_t mid_pos = mcu_front.find(mid);
-            if (mid_pos == std::string::npos) continue;
-            size_t v_pos = mcu_front.find("v:", mid_pos);
-            if (v_pos == std::string::npos) continue;
-            dof_vel[i] = std::stof(mcu_front.substr(v_pos + 2));
-        }
-        // Rear: M9..M16 -> dof_vel[8..15]
-        for (size_t j = 0; j < 8; ++j) {
-            int mid_num = 9 + static_cast<int>(j);
-            std::string mid = "M" + std::to_string(mid_num);
-            size_t mid_pos = mcu_rear.find(mid);
-            if (mid_pos == std::string::npos) continue;
-            size_t v_pos = mcu_rear.find("v:", mid_pos);
-            if (v_pos == std::string::npos) continue;
-            dof_vel[8 + j] = std::stof(mcu_rear.substr(v_pos + 2));
+        // ---- 속도 ----
+        // front: M1..M8 -> dof_vel[0..7]
+        for (int i = 0; i < 8; ++i) {
+            int mid = i + 1; // 1..8
+            std::size_t base = _front_motor_pos[mid];
+            std::size_t vpos = mcu_front.find("v:", base);
+            float val = std::stof(mcu_front.substr(vpos + 2));
+            dof_vel[i] = val;
         }
 
-        // ---- IMU (가능한 쪽에서 파싱) ----
-        const std::string* imu_src = &mcu_rear;
-        if (imu_src->find("IMU") == std::string::npos) imu_src = &mcu_rear;
+        // rear: M9..M16 -> dof_vel[8..15]
+        for (int j = 0; j < 8; ++j) {
+            int mid = 9 + j; // 9..16
+            std::size_t base = _rear_motor_pos[mid];
+            std::size_t vpos = mcu_rear.find("v:", base);
+            float val = std::stof(mcu_rear.substr(vpos + 2));
+            dof_vel[8 + j] = val;
+        }
 
-        size_t imu_pos = imu_src->find("IMU");
-        if (imu_pos != std::string::npos) {
-            size_t gx_pos = imu_src->find("gx:", imu_pos);
-            if (gx_pos != std::string::npos) ang_vel[0] = std::stof(imu_src->substr(gx_pos + 3));
-            size_t gy_pos = imu_src->find("gy:", imu_pos);
-            if (gy_pos != std::string::npos) ang_vel[1] = std::stof(imu_src->substr(gy_pos + 3));
-            size_t gz_pos = imu_src->find("gz:", imu_pos);
-            if (gz_pos != std::string::npos) ang_vel[2] = std::stof(imu_src->substr(gz_pos + 3));
+        // ---- IMU (rear) ----
+        {
+            std::size_t imu_pos = mcu_rear.rfind("IMU");
+            if (imu_pos != std::string::npos) {
+                std::size_t gx_pos = mcu_rear.find("gx:", imu_pos);
+                if (gx_pos != std::string::npos) ang_vel[0] = std::stof(mcu_rear.substr(gx_pos + 3));
+                std::size_t gy_pos = mcu_rear.find("gy:", imu_pos);
+                if (gy_pos != std::string::npos) ang_vel[1] = std::stof(mcu_rear.substr(gy_pos + 3));
+                std::size_t gz_pos = mcu_rear.find("gz:", imu_pos);
+                if (gz_pos != std::string::npos) ang_vel[2] = std::stof(mcu_rear.substr(gz_pos + 3));
 
-            size_t pgx_pos = imu_src->find("pgx:", imu_pos);
-            if (pgx_pos != std::string::npos) proj_grav[0] = std::stof(imu_src->substr(pgx_pos + 4));
-            size_t pgy_pos = imu_src->find("pgy:", imu_pos);
-            if (pgy_pos != std::string::npos) proj_grav[1] = std::stof(imu_src->substr(pgy_pos + 4));
-            size_t pgz_pos = imu_src->find("pgz:", imu_pos);
-            if (pgz_pos != std::string::npos) proj_grav[2] = std::stof(imu_src->substr(pgz_pos + 4));
+                std::size_t pgx_pos = mcu_rear.find("pgx:", imu_pos);
+                if (pgx_pos != std::string::npos) proj_grav[0] = std::stof(mcu_rear.substr(pgx_pos + 4));
+                std::size_t pgy_pos = mcu_rear.find("pgy:", imu_pos);
+                if (pgy_pos != std::string::npos) proj_grav[1] = std::stof(mcu_rear.substr(pgy_pos + 4));
+                std::size_t pgz_pos = mcu_rear.find("pgz:", imu_pos);
+                if (pgz_pos != std::string::npos) proj_grav[2] = std::stof(mcu_rear.substr(pgz_pos + 4));
+            }
         }
 
         return _obs;
