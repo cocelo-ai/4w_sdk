@@ -209,99 +209,54 @@ public:
     }
 
     void wake() {
-        // (0) 선행 조건: 기존 게인이 한 번이라도 설정되어 있어야 함
-        if (!_gains_set) {
-            throw RobotSetGainsError("wake(): call set_gains() before wake()");
-        }
-
-        // (1) 원래 게인 백업
-        const auto kp_nom = _kp;
-        const auto kd_nom = _kd;
-
-        // (2) 안전 게인 (관절만 낮은 kp, 바퀴 kp=0 유지)
-        std::vector<float> kp_safe = {
-            5,5,5,5,5,5, 0,0,   // front: 0..5 joints, 6..7 wheels
-            5,5,5,5,5,5, 0,0    // rear : 8..13 joints, 14..15 wheels
-        };
-        std::vector<float> kd_safe = {
-            0.15f,0.15f,0.15f,0.15f,0.15f,0.15f, 0.25f,0.25f,
-            0.15f,0.15f,0.15f,0.15f,0.15f,0.15f, 0.25f,0.25f
-        };
+        if (!_gains_set) throw RobotSetGainsError("wake(): call set_gains() before wake()");
+    
+        auto kp_nom = _kp, kd_nom = _kd; 
+        std::vector<float> kp_safe = {5,5,5,5,5,5,0,0, 5,5,5,5,5,5,0,0};
+        std::vector<float> kd_safe = {0.15f,0.15f,0.15f,0.15f,0.15f,0.15f,0.25f,0.25f,
+                                      0.15f,0.15f,0.15f,0.15f,0.15f,0.15f,0.25f,0.25f};
         set_gains(kp_safe, kd_safe);
-
-        // (3) 0 명령 준비
-        std::vector<float> pos(_last_action_len, 0.0f);
-        std::vector<float> vel(_last_action_len, 0.0f);
-        std::vector<float> tau(_last_action_len, 0.0f);
-
-        // (4) 수렴 파라미터
-        const float pos_eps = 0.02f;   // rad, ≈1.1°
-        const float vel_eps = 0.05f;   // rad/s
-        const int   settle_ms = 200;   // 오차 내 유지 시간
-        const int   max_ms    = 10000;  // 타임아웃
-        const int   dt_ms     = 20;    // 루프 주기
-
-        auto now_ms = [](){
-            return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::steady_clock::now().time_since_epoch()).count();
+    
+        std::vector<float> pos(16,0), vel(16,0), tau(16,0);
+        auto send = [&](const std::vector<float>& kp,const std::vector<float>& kd){
+            _cli_front.operation_control(_motor_ids_front, {pos.begin(),pos.begin()+8},{vel.begin(),vel.begin()+8},
+                                         {kp.begin(),kp.begin()+8},{kd.begin(),kd.begin()+8},{tau.begin(),tau.begin()+8});
+            _cli_rear.operation_control(_motor_ids_rear, {pos.begin()+8,pos.end()},{vel.begin()+8,vel.end()},
+                                        {kp.begin()+8,kp.end()},{kd.begin()+8,kd.end()},{tau.begin()+8,tau.end()});
         };
-        auto send_zero_cmd = [&](const std::vector<float>& kp, const std::vector<float>& kd){
-            // 바퀴(6,7,14,15)는 속도 제어: vel=0, 관절은 pos=0
-            // → 이미 pos/vel/tau가 0으로 준비됨. kp/kd는 인자로 전달.
-            auto slice = [](const std::vector<float>& v, size_t s, size_t e){
-                return std::vector<float>(v.begin()+s, v.begin()+e);
-            };
-            _cli_front.operation_control(
-                _motor_ids_front,
-                slice(pos, 0, 8), slice(vel, 0, 8),
-                slice(kp,  0, 8), slice(kd,  0, 8),
-                slice(tau, 0, 8)
-            );
-            _cli_rear.operation_control(
-                _motor_ids_rear,
-                slice(pos, 8, 16), slice(vel, 8, 16),
-                slice(kp,  8, 16), slice(kd,  8, 16),
-                slice(tau, 8, 16)
-            );
-        };
-
-        const int t0 = now_ms();
-        int in_band_since = -1;
-
-        // (5) 메인 루프: 0 명령만 전송 (check_safety 호출 안 함)
-        while (true) {
-            send_zero_cmd(_kp, _kd); // 현재는 안전 게인(_kp/_kd = kp_safe/kd_safe)
-
-            auto obs = get_obs();
-            const auto& q  = obs["dof_pos"]; // 12개 (0..11)
-            const auto& dq = obs["dof_vel"]; // 16개 (0..15)
-
-            bool pos_ok = true;
-            for (int i=0;i<12;++i) {
-                if (std::fabs(q[i]) > pos_eps) { pos_ok = false; break; }
-            }
-            bool vel_ok = true;
-            for (int i=0;i<16;++i) {
-                if (std::fabs(dq[i]) > vel_eps) { vel_ok = false; break; }
-            }
-
-            const int t = now_ms();
-            if (pos_ok && vel_ok) {
-                if (in_band_since < 0) in_band_since = t;
-                if (t - in_band_since >= settle_ms) break; // 안정화 완료
-            } else {
-                in_band_since = -1;
-            }
-
-            if (t - t0 > max_ms) {
-                estop("wake(): timeout while settling to zero");
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(dt_ms));
+    
+        const int ramp_ms=7000, max_ms=10000, settle_ms=200, dt=20; // ★ 7초로 변경
+        const float pos_eps=0.02f, vel_eps=0.05f;
+        auto kp_half=kp_nom, kd_half=kd_nom;
+        for(size_t i=0;i<kp_nom.size();++i){ kp_half[i]*=0.5f; kd_half[i]*=0.5f; }
+    
+        auto now=[](){return (int)std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();};
+        int t0=now(), in_band=-1;
+    
+        while(true){
+            int t=now(), el=t-t0;
+            float a=std::min(1.f, el/float(ramp_ms));
+            std::vector<float> kp(16),kd(16);
+            for(size_t i=0;i<16;++i){ kp[i]=kp_safe[i]+a*(kp_half[i]-kp_safe[i]);
+                                      kd[i]=kd_safe[i]+a*(kd_half[i]-kd_safe[i]); }
+            send(kp,kd);
+    
+            auto obs=get_obs(); auto&q=obs["dof_pos"]; auto&dq=obs["dof_vel"];
+            bool pos_ok=std::all_of(q.begin(),q.begin()+12,[&](float v){return fabs(v)<=pos_eps;});
+            bool vel_ok=std::all_of(dq.begin(),dq.end(),[&](float v){return fabs(v)<=vel_eps;});
+    
+            if(pos_ok&&vel_ok){
+                if(in_band<0) in_band=t;
+                if(t-in_band>=settle_ms || el>=max_ms) break;
+            } else in_band=-1;
+    
+            if(el>max_ms) estop("wake(): timeout (>10s)");
+            std::this_thread::sleep_for(std::chrono::milliseconds(dt));
         }
-
-        // (6) 원래 게인 복구 후, 한 프레임 0 명령 (여전히 check_safety 호출 안 함)
-        set_gains(kp_nom, kd_nom);
-        send_zero_cmd(_kp, _kd);
+    
+        set_gains(kp_nom,kd_nom);
+        send(kp_nom,kd_nom);
     }
     
     void precise_stop() { /* TODO */ }
