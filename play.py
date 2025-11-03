@@ -30,16 +30,17 @@ robot.set_gains(kp=kp, kd=kd)
 rl.add_mode(mode)
 rl.set_mode(mode_id=1)
 
+# Wake the robot
+robot.wake()
 @control_rate(robot, hz=50)
 def loop():
     obs = robot.get_obs()             # Get observation
-    print(obs)
     cmd = joystick.get_cmd()          # Get command
 
     state = rl.build_state(obs, cmd)  # Build state
     action = rl.select_action(state)  # Select action
-    action = [0] * 16
-    #robot.do_action(action)           # Do action
+    #action = [0] * 16
+    robot.do_action(action)           # Do action
 
 loop()
 
